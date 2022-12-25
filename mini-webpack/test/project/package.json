@@ -4,7 +4,8 @@
   "description": "",
   "main": "webpack.config.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "parse:esm": "node ../parse/esm.js",
+    "parse:cjs": "node ../parse/cjs.js"
   },
   "keywords": [],
   "author": "",
