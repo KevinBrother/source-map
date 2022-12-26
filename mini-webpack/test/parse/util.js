@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const babel = require('@babel/core');
 const parser = require('@babel/parser');
 const types = require('@babel/types');
@@ -13,12 +14,11 @@ const generator = require('@babel/generator');
 };
 
  */
-const compile = (code, dirname = '') => {
+const compile = (filename) => {
   const dependencies = {};
-
+  const content = fs.readFileSync(filename, 'utf-8');
   // 1.parse 将代码解析为抽象语法树（AST）
-  const AST = parser.parse(code, { sourceType: 'module' });
-  console.log('%c [ AST ]-19', 'font-size:13px; background:pink; color:#bf2c9f;', AST);
+  const AST = parser.parse(content, { sourceType: 'module' });
 
   // 2,traverse 转换代码
   const visitor = {
@@ -43,23 +43,84 @@ const compile = (code, dirname = '') => {
         }
       }
     },
+    // 获取通过 import 导入的模块
     ImportDeclaration({ node }) {
-      // 函数名是 AST 中包含的内容，参数是一些节点，node 表示这些节点下的子内容
-      // 我们从抽象语法树里面拿到的路径是相对路径，然后我们要处理它，在 bundler.js 中才能正确使用
-      const newDirname = './' + path.join(dirname, node.source.value).replace('\\', '/'); // 将dirname 和 获取到的依赖联合生成绝对路径
-      console.log('%c [ newDirname ]-46', 'font-size:13px; background:pink; color:#bf2c9f;', newDirname);
-      dependencies[node.source.value] = newDirname; // 将源路径和新路径以 key-value 的形式存储起来
+      // 返回类似于unix目录的命令
+      const dirname = path.dirname(filename);
+      // 返回一个带有完成标准化路径的字符串，其中包含多有段
+      const newFile = './' + path.join(dirname, node.source.value);
+
+      // 保存所有依赖的模块
+      dependencies[node.source.value] = newFile;
     }
   };
 
   traverse.default(AST, visitor);
 
-  // 3. generator 将 AST 转回成代码
+  /*   // 3. generator 将 AST 转回成代码
   const newCode = generator.default(AST, {}, code);
+ */
+  // 通过 babel.core 和 @babel/preset-env进行代码的转换
+  const { code } = babel.transformFromAst(AST, null, {
+    presets: ['@babel/preset-env']
+  });
 
-  return { dependencies, code: newCode };
+  return { dependencies, filename, code };
 };
 
+// entry 为入口文件
+function getDepGraph(entry) {
+  const entryModule = compile(entry);
+
+  const graphArray = [entryModule];
+  // TODO 看下这个小算法为什么能成功啊？
+  for (let i = 0; i < graphArray.length; i++) {
+    const item = graphArray[i];
+    const { dependencies } = item; // 拿到文件依赖的模块集合
+
+    for (let j in dependencies) {
+      const dep = compile(dependencies[j]);
+      graphArray.push(dep); // 目的是让入口模块及其所有相关的模块放入数组
+    }
+  }
+
+  // 接下来生成依赖图
+  const graph = {};
+
+  graphArray.forEach((item) => {
+    graph[item.filename] = {
+      dependencies: item.dependencies,
+      code: item.code
+    };
+  });
+  return graph;
+}
+
+// 实现require方法
+function getCode(entry) {
+  //要先把对象转换为字符串，不然在下面的模板字符串中会默认调取对象的toString方法，参数变成[Object object],显然不行
+  const graph = JSON.stringify(getDepGraph(entry));
+
+  return `
+  (function(graph) {
+    // require 函数的本质是执行一个模块的代码，然后将相应的变量挂载到exports对象上
+
+    function require(module) {
+      function localRequire(relativePath) {
+        return require(graph[module].dependencies[relativePath])
+      }
+      var exports = {};
+      (function(require, exports, code) {
+        eval(code)
+      })(localRequire, exports, graph[module].code)
+      return exports;  // 返回模块的exports对象
+    }
+    require('${entry}')
+  })(${graph})`;
+}
+
 module.exports = {
-  compile
+  compile,
+  getDepGraph,
+  getCode
 };
